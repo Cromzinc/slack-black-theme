@@ -1,23 +1,63 @@
-function GetLatestSlackVersionFolder {
-    $latestVersionFolder = $filename = cmd /c "dir $env:LOCALAPPDATA\slack\app* /ad /on /b" | select -last 1
+function Get-SlackFolder {
+    # Windows Slack install from Slack website
+    if (Test-Path "$env:LOCALAPPDATA\slack\slack.exe") {
+        return Get-ManuallyDownloadedSlackFolder
+    }
+
+    # Windows Chocolatey Slack install
+    if (Test-Path "$env:PROGRAMFILES\slack\slack.exe") {
+        return "$env:PROGRAMFILES\slack"
+    }
+
+    # TODO: Windows Store slack folder path
+
+    [Console]::ForegroundColor = 'red'
+    [Console]::Error.WriteLine('Unable to locate Slack install')
+    [Console]::ResetColor()
+}
+
+function Get-ManuallyDownloadedSlackFolder {
+    return "$env:LOCALAPPDATA\slack\$(Get-LatestSlackVersionFolder)"
+}
+
+function Get-LatestSlackVersionFolder {
+    $versions =
+        { [int]($_.Name -replace '.*?-(\d+)\.(\d+)\.(\d+)', '$1') },
+        { [int]($_.Name -replace '.*?-(\d+)\.(\d+)\.(\d+)', '$2') },
+        { [int]($_.Name -replace '.*?-(\d+)\.(\d+)\.(\d+)', '$3') }
+
+    $latestVersionFolder = Get-ChildItem $env:LOCALAPPDATA\slack\app-* | Sort-Object $versions -Descending | Select-Object -First 1 -ExpandProperty Name
+
     return $latestVersionFolder
 }
-$global:latestVersionFolder = GetLatestSlackVersionFolder
 
-function StartSlack {
+function Invoke-SlackDevMode {
     [System.Environment]::SetEnvironmentVariable('SLACK_DEVELOPER_MENU', 'true', 'Process')
-    & $env:LOCALAPPDATA\slack\$global:latestVersionFolder\slack.exe
+
+    $slackBasePath = Get-SlackFolder
+
+    if (!$slackBasePath) {
+        return
+    }
+
+    & "$slackBasePath\slack.exe"
 }
 
-function InstallSlackPatch([switch] $DevMode = $false) {
+function Install-SlackPatch([switch] $DevMode = $false) {
     # Find correct Slack folder
-    $slackFolder = "$env:LOCALAPPDATA\slack\$global:latestVersionFolder\resources\app.asar.unpacked\src\static"
+    $slackBasePath = Get-SlackFolder
+
+    if (!$slackBasePath) {
+        return
+    }
+
+    $slackFolder = "$slackBasePath\resources\app.asar.unpacked\src\static"
 
     $slackFile = Join-Path $slackFolder ssb-interop.js
 
     # Backup original files
     if ((Test-Path -Path "$slackFile.bak") -eq $False) {
-        Copy-Item -Path $slackFile -Destination "$slackFile.bak"	
+        Copy-Item -Path $slackFile -Destination "$slackFile.bak"
     }
 
     # Read slack file into memory
@@ -27,11 +67,11 @@ function InstallSlackPatch([switch] $DevMode = $false) {
     $patchIdentifier = '//Patch from https://github.com/marchica/slack-black-theme'
 
     if ($fileContents | Select-String -Pattern $patchIdentifier -SimpleMatch -Quiet) {
-        Write-Host 'Already patched!'
-        exit
+        Write-Output 'Already patched!'
+        return
     }
 
-    Write-Host "Patching $slackFile..."
+    Write-Output "Patching file: $slackFile"
 
     # Read patch into memory and replace URL
     $urlPlaceholder = 'URL_TO_CSS'
@@ -56,10 +96,18 @@ function InstallSlackPatch([switch] $DevMode = $false) {
         # Add patch to end of slack file
         Add-Content -Path $slackFile -Value $devPatchContents
     }
+
+    Write-Output 'Successfully patched!  ** Ctrl-R in Slack to refresh **'
 }
 
-function UninstallSlackPatch() {
-    $slackFolder = "$env:LOCALAPPDATA\slack\$global:latestVersionFolder\resources\app.asar.unpacked\src\static"
+function Uninstall-SlackPatch() {
+    $slackBasePath = Get-SlackFolder
+
+    if (!$slackBasePath) {
+        return
+    }
+
+    $slackFolder = "$slackBasePath\resources\app.asar.unpacked\src\static"
 
     if(Test-Path -Path $slackFolder\ssb-interop.js.bak) {
         Move-Item -Path $slackFolder\ssb-interop.js.bak -Destination $slackFolder\ssb-interop.js -Force
